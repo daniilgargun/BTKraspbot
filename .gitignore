@@ -1,0 +1,52 @@
+# Виртуальные окружения
+.env
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Логи и временные файлы
+*.log
+*.pot
+*.pyc
+bot_logs.txt
+security.log
+setup.log
+bot_state.json
+
+# Конфиденциальные данные
+botbtk-8ac0a-firebase-adminsdk-n5pjf-54392c0500.json
+*.pem
+*.key
+*.crt
+
+# Системные файлы
+.DS_Store
+Thumbs.db

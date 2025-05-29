@@ -53,7 +53,7 @@ def format_date(date_str: str) -> str:
             # Преобразуем русские названия месяцев в сокращенные
             month_mapping = {
                 'март': 'мар',
-                'май': 'май',
+                'май': 'мая',
                 'июнь': 'июн',
                 'июль': 'июл',
                 'август': 'авг',
@@ -101,6 +101,20 @@ def format_date(date_str: str) -> str:
         return date_str
 
 class ScheduleFormatter:
+    @staticmethod
+    def _parse_date(date_str: str) -> datetime:
+        """Преобразование строки даты в объект datetime"""
+        try:
+            if '-' in date_str:
+                day, month = date_str.split('-')
+                month_num = MONTHS.get(month.lower())
+                if month_num:
+                    return datetime(datetime.now().year, month_num, int(day))
+            return datetime.now()  # Возвращаем текущую дату если парсинг не удался
+        except Exception as e:
+            logger.error(f"Ошибка парсинга даты {date_str}: {e}")
+            return datetime.now()
+
     @staticmethod
     def format_schedule(schedule_data: str | List[Dict] | None, day: str, user_data: dict) -> str:
         """Форматирование расписания на день"""
@@ -175,7 +189,7 @@ class ScheduleFormatter:
         grouped_lessons = []
         current_group = None
         
-        for lesson in sorted(schedule_data, key=lambda x: int(x['number'])):
+        for lesson in sorted(schedule_data, key=lambda x: int(x['lesson_number'])):
             if current_group and ScheduleFormatter._can_group_lessons(current_group[-1], lesson):
                 current_group.append(lesson)
             else:
@@ -189,9 +203,9 @@ class ScheduleFormatter:
         # Форматируем каждую группу пар
         for group in grouped_lessons:
             if len(group) > 1:
-                numbers = f"{group[0]['number']}-{group[-1]['number']}"
+                numbers = f"{group[0]['lesson_number']}-{group[-1]['lesson_number']}"
             else:
-                numbers = group[0]['number']
+                numbers = group[0]['lesson_number']
 
             lesson_block = [
                 f"🕐 {numbers} пара",
@@ -199,13 +213,13 @@ class ScheduleFormatter:
             ]
 
             if user_data.get('role') == 'Студент':
-                lesson_block.append(f"👨‍🏫 {group[0]['teacher']}")
+                lesson_block.append(f"👨‍🏫 {group[0]['teacher_name']}")
             else:
                 # Для преподавателей показываем группу
                 groups = set()
                 for lesson in group:
-                    if lesson.get('group'):
-                        groups.add(lesson['group'])
+                    if lesson.get('group_name'):
+                        groups.add(lesson['group_name'])
                 if groups:
                     lesson_block.append(f"👥 Группа: {', '.join(sorted(groups))}")
 
@@ -224,10 +238,10 @@ class ScheduleFormatter:
         """Проверка возможности группировки пар"""
         return (
             lesson1['discipline'] == lesson2['discipline'] and
-            lesson1['teacher'] == lesson2['teacher'] and
+            lesson1['teacher_name'] == lesson2['teacher_name'] and
             lesson1['classroom'] == lesson2['classroom'] and
             lesson1.get('subgroup', '0') == lesson2.get('subgroup', '0') and
-            int(lesson2['number']) == int(lesson1['number']) + 1
+            int(lesson2['lesson_number']) == int(lesson1['lesson_number']) + 1
         )
 
     @staticmethod
@@ -250,8 +264,11 @@ class ScheduleFormatter:
 
         response = [header]
 
+        # Сортируем даты
+        sorted_dates = sorted(schedule_data.items(), key=lambda x: ScheduleFormatter._parse_date(x[0]))
+
         # Перебираем все даты в расписании
-        for date, lessons in schedule_data.items():
+        for date, lessons in sorted_dates:
             if not lessons:  # Пропускаем пустые дни
                 continue
 
@@ -266,7 +283,7 @@ class ScheduleFormatter:
             grouped_lessons = []
             current_group = None
             
-            for lesson in sorted(lessons, key=lambda x: int(x['number'])):
+            for lesson in sorted(lessons, key=lambda x: int(x['lesson_number'])):
                 if current_group and ScheduleFormatter._can_group_lessons(current_group[-1], lesson):
                     current_group.append(lesson)
                 else:
@@ -280,9 +297,9 @@ class ScheduleFormatter:
             # Форматируем каждую группу пар
             for group in grouped_lessons:
                 if len(group) > 1:
-                    numbers = f"{group[0]['number']}-{group[-1]['number']}"
+                    numbers = f"{group[0]['lesson_number']}-{group[-1]['lesson_number']}"
                 else:
-                    numbers = group[0]['number']
+                    numbers = group[0]['lesson_number']
 
                 lesson_block = [
                     f"🕐 {numbers} пара",
@@ -290,13 +307,13 @@ class ScheduleFormatter:
                 ]
 
                 if user_data.get('role') == 'Студент':
-                    lesson_block.append(f"👨‍🏫 {group[0]['teacher']}")
+                    lesson_block.append(f"👨‍🏫 {group[0]['teacher_name']}")
                 else:
                     # Для преподавателей показываем группу
                     groups = set()
                     for lesson in group:
-                        if lesson.get('group'):
-                            groups.add(lesson['group'])
+                        if lesson.get('group_name'):
+                            groups.add(lesson['group_name'])
                     if groups:
                         lesson_block.append(f"👥 Группа: {', '.join(sorted(groups))}")
 

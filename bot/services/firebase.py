@@ -1,37 +1,53 @@
-import os
-import json
-import firebase_admin
-from firebase_admin import credentials, firestore
 from bot.config import logger
+from datetime import datetime
 
-def initialize_firebase():
-    """Инициализация Firebase"""
-    try:
-        # Изменяем путь к файлу учетных данных
-        # Получаем абсолютный путь к текущей директории проекта
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        cred_path = os.path.join(project_root, 'tests', 'botbtk-8ac0a-firebase-adminsdk-n5pjf-54392c0500.json')
-        
-        logger.info(f"Поиск файла учетных данных по пути: {cred_path}")
-        
-        # Проверяем существование файла
-        if not os.path.exists(cred_path):
-            raise ValueError(f"Файл с учетными данными не найден: {cred_path}")
+# Заглушка для Firebase SERVER_TIMESTAMP
+SERVER_TIMESTAMP = datetime.now()
 
-        try:
-            # Инициализируем Firebase с учетными данными из файла
-            cred = credentials.Certificate(cred_path)
-            firebase_admin.initialize_app(cred)
-            
-            return firestore.client()
+# Заглушка для Firebase
+class DummyFirebase:
+    def __init__(self):
+        logger.info("Используется заглушка Firebase (SQLite)")
+    
+    def collection(self, *args, **kwargs):
+        return self
+    
+    def document(self, *args, **kwargs):
+        return self
+    
+    def get(self, *args, **kwargs):
+        return self
+    
+    def set(self, *args, **kwargs):
+        return None
+    
+    def update(self, *args, **kwargs):
+        return None
+    
+    def delete(self, *args, **kwargs):
+        return None
+    
+    def where(self, *args, **kwargs):
+        return self
+    
+    def stream(self, *args, **kwargs):
+        return []
+    
+    def batch(self, *args, **kwargs):
+        return self
+    
+    def commit(self, *args, **kwargs):
+        return None
+    
+    # Добавляем свойство exists для имитации документа
+    @property
+    def exists(self):
+        return False
+    
+    # Добавляем метод to_dict для имитации документа
+    def to_dict(self):
+        return {}
 
-        except Exception as e:
-            logger.error(f"Ошибка при инициализации Firebase: {e}")
-            raise
-
-    except Exception as e:
-        logger.error(f"Ошибка при инициализации Firebase: {e}")
-        raise
-
-# Initialize Firebase and get database instance
-db = initialize_firebase()
+# Создаем заглушку вместо реального подключения к Firebase
+db = DummyFirebase()
+logger.info("Firebase заменен на SQLite")

@@ -2,28 +2,38 @@ from aiogram import Router, types
 from aiogram.filters import CommandStart
 from aiogram.types import Message
 from bot.keyboards.keyboards import get_start_keyboard
-from bot.services.database import Database
+from bot.database.db_adapter import db_adapter as db
 from bot.config import logger
 
 router = Router()
-db = Database()
 
 @router.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
     user_id = message.from_user.id
+    username = message.from_user.username
     
     try:
+        logger.info(f"Получена команда /start от пользователя {user_id} (@{username})")
+        
         # Проверяем существует ли пользователь в БД
-        if not await db.user_exists(user_id):
+        exists = await db.user_exists(user_id)
+        logger.info(f"Проверка существования пользователя {user_id}: {exists}")
+        
+        if not exists:
             # Если нет - создаем нового пользователя
-            await db.create_user(user_id)
-            logger.info(f"Создан новый пользователь с ID: {user_id}")
+            logger.info(f"Начинаем создание пользователя {user_id}")
+            created = await db.create_user(user_id)
+            logger.info(f"Результат создания пользователя {user_id}: {'успешно' if created else 'ошибка'}")
+            
+            if not created:
+                logger.error(f"Не удалось создать пользователя {user_id}")
+                await message.answer("Произошла ошибка при регистрации. Пожалуйста, попробуйте позже.")
+                return
         
         await message.answer(
             text="👋 Привет! 🤖 Я бот для просмотра расписания БТК.\n\n⚙️ Вы можете изменить свою роль в меню настроек.",
             reply_markup=get_start_keyboard(user_id)
         )
-        
     except Exception as e:
-        error_msg = f"Ошибка при обработке команды start: {str(e)}"
-        logger.error(error_msg)
+        logger.error(f"Ошибка при обработке команды /start: {e}")
+        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")

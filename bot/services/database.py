@@ -1,9 +1,10 @@
 from typing import Dict, Any, Optional, List
-from firebase_admin import firestore
+from bot.services.firebase import SERVER_TIMESTAMP
 from bot.services.database_config import get_database
 from bot.config import logger
 from datetime import datetime
 import time
+import asyncio
 
 db = get_database()
 
@@ -40,10 +41,13 @@ class Database:
                 "selected_teacher": None, 
                 "selected_group": None,
                 "notifications": False,
-                "created_at": firestore.SERVER_TIMESTAMP
+                "created_at": SERVER_TIMESTAMP
             }
             
-            self.users_collection.document(str(user_id)).set(user_data)
+            # Оборачиваем синхронный вызов в асинхронный контекст
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: self.users_collection.document(str(user_id)).set(user_data))
+            
             logger.info(f"Пользователь {user_id} успешно создан")
             return True
         except Exception as e:
@@ -53,7 +57,8 @@ class Database:
     async def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Получение данных пользователя"""
         try:
-            doc = self.users_collection.document(str(user_id)).get()
+            loop = asyncio.get_event_loop()
+            doc = await loop.run_in_executor(None, lambda: self.users_collection.document(str(user_id)).get())
             if doc.exists:
                 logger.info(f"Получены данные пользователя {user_id}")
                 return doc.to_dict()
@@ -66,7 +71,8 @@ class Database:
     async def update_user_role(self, user_id: int, role: str) -> bool:
         """Обновление роли пользователя"""
         try:
-            self.users_collection.document(str(user_id)).update({"role": role})
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: self.users_collection.document(str(user_id)).update({"role": role}))
             logger.info(f"Роль пользователя {user_id} обновлена на {role}")
             return True
         except Exception as e:
@@ -76,7 +82,8 @@ class Database:
     async def update_selected_teacher(self, user_id: int, teacher: str) -> bool:
         """Обновление выбранного преподавателя"""
         try:
-            self.users_collection.document(str(user_id)).update({"selected_teacher": teacher})
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: self.users_collection.document(str(user_id)).update({"selected_teacher": teacher}))
             logger.info(f"Выбранный преподаватель пользователя {user_id} обновлен на {teacher}")
             return True
         except Exception as e:
@@ -86,7 +93,8 @@ class Database:
     async def update_selected_group(self, user_id: int, group: str) -> bool:
         """Обновление выбранной группы"""
         try:
-            self.users_collection.document(str(user_id)).update({"selected_group": group})
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: self.users_collection.document(str(user_id)).update({"selected_group": group}))
             logger.info(f"Выбранная группа пользователя {user_id} обновлена на {group}")
             return True
         except Exception as e:
@@ -96,7 +104,8 @@ class Database:
     async def toggle_notifications(self, user_id: int, enabled: bool) -> bool:
         """Включение/выключение уведомлений"""
         try:
-            self.users_collection.document(str(user_id)).update({"notifications": enabled})
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: self.users_collection.document(str(user_id)).update({"notifications": enabled}))
             logger.info(f"Уведомления для пользователя {user_id} {'включены' if enabled else 'выключены'}")
             return True
         except Exception as e:
@@ -106,8 +115,16 @@ class Database:
     async def user_exists(self, user_id: int) -> bool:
         """Проверка существования пользователя"""
         try:
-            doc = self.users_collection.document(str(user_id)).get()
+            loop = asyncio.get_event_loop()
+            doc = await loop.run_in_executor(None, lambda: self.users_collection.document(str(user_id)).get())
             exists = doc.exists
+            
+            # Если пользователь не существует, создаем его
+            if not exists:
+                logger.info(f"Пользователь {user_id} не найден, создаем нового пользователя")
+                await self.create_user(user_id)
+                exists = True
+                
             logger.info(f"Проверка существования пользователя {user_id}: {'существует' if exists else 'не существует'}")
             return exists
         except Exception as e:
@@ -117,8 +134,16 @@ class Database:
     async def update_schedule(self, schedule_data: Dict[str, Any]) -> bool:
         """Обновление расписания"""
         try:
-            self.schedule_collection.document('current').set(schedule_data)
-            logger.info("Расписание успешно обновлено")
+            # Сохраняем в Firebase
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: self.schedule_collection.document('current').set(schedule_data))
+            logger.info("Расписание успешно обновлено в Firebase")
+            
+            # Сохраняем в SQLite
+            from bot.database import db as sqlite_db
+            await sqlite_db.save_schedule(schedule_data)
+            logger.info("Расписание успешно обновлено в SQLite")
+            
             return True
         except Exception as e:
             logger.error(f"Ошибка при обновлении расписания: {e}")
@@ -127,7 +152,8 @@ class Database:
     async def get_schedule(self) -> Optional[Dict[str, Any]]:
         """Получение текущего расписания"""
         try:
-            doc = self.schedule_collection.document('current').get()
+            loop = asyncio.get_event_loop()
+            doc = await loop.run_in_executor(None, lambda: self.schedule_collection.document('current').get())
             if doc.exists:
                 logger.info("Получено текущее расписание")
                 return doc.to_dict()
@@ -141,7 +167,8 @@ class Database:
         """Получение списка всех групп"""
         try:
             logger.info("Получение списка всех групп")
-            doc = self.schedule_collection.document('groups').get()
+            loop = asyncio.get_event_loop()
+            doc = await loop.run_in_executor(None, lambda: self.schedule_collection.document('groups').get())
             if doc.exists:
                 groups = doc.to_dict().get('groups', [])
                 logger.info(f"Получено {len(groups)} групп")
@@ -156,7 +183,8 @@ class Database:
         """Получение списка всех преподавателей"""
         try:
             logger.info("Получение списка всех преподавателей")
-            doc = self.schedule_collection.document('teachers').get()
+            loop = asyncio.get_event_loop()
+            doc = await loop.run_in_executor(None, lambda: self.schedule_collection.document('teachers').get())
             if doc.exists:
                 teachers = doc.to_dict().get('teachers', [])
                 logger.info(f"Получено {len(teachers)} преподавателей")
@@ -175,11 +203,11 @@ class Database:
             
             # Сохраняем группы
             groups_ref = self.schedule_collection.document('groups')
-            batch.set(groups_ref, {'groups': groups, 'updated_at': firestore.SERVER_TIMESTAMP})
+            batch.set(groups_ref, {'groups': groups, 'updated_at': SERVER_TIMESTAMP})
             
             # Сохраняем преподавателей
             teachers_ref = self.schedule_collection.document('teachers')
-            batch.set(teachers_ref, {'teachers': teachers, 'updated_at': firestore.SERVER_TIMESTAMP})
+            batch.set(teachers_ref, {'teachers': teachers, 'updated_at': SERVER_TIMESTAMP})
             
             # Выполняем транзакцию
             batch.commit()
@@ -315,7 +343,7 @@ class Database:
         """Обновление времени последнего обновления кэша"""
         try:
             self.cache_collection.document('info').set({
-                'last_update': firestore.SERVER_TIMESTAMP
+                'last_update': SERVER_TIMESTAMP
             }, merge=True)
             return True
         except Exception as e:
@@ -325,13 +353,23 @@ class Database:
     async def get_last_checked_dates(self) -> List[str]:
         """Получение списка последних проверенных дат"""
         try:
-            doc = self.cache_collection.document('last_checked_dates').get()
+            loop = asyncio.get_event_loop()
+            doc = await loop.run_in_executor(None, lambda: self.cache_collection.document('last_checked_dates').get())
             if doc.exists:
                 return doc.to_dict().get('dates', [])
             return []
         except Exception as e:
             logger.error(f"Ошибка при получении последних проверенных дат: {e}")
             return []
+
+    def get_admin_id(self) -> int:
+        """Получение ID администратора из конфига"""
+        try:
+            from bot.config import config
+            return config.ADMIN_ID
+        except Exception as e:
+            logger.error(f"Ошибка при получении ID администратора: {e}")
+            return None
 
     async def update_last_checked_dates(self, dates: List[str]) -> bool:
         """Обновление списка последних проверенных дат"""

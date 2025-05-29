@@ -1,9 +1,7 @@
 from functools import wraps
 from aiogram.types import Message
-from bot.services.database import Database
+from bot.database.db_adapter import db_adapter as db
 from bot.config import logger
-
-db = Database()
 
 def user_exists_check():
     def decorator(func):

@@ -1,131 +1,205 @@
+"""
+Copyright (c) 2023-2024 Gargun Daniil
+Telegram: @Daniilgargun (https://t.me/Daniilgargun)
+Contact ID: 1437368782
+All rights reserved.
+
+Несанкционированное использование, копирование или распространение 
+данного программного обеспечения запрещено.
+"""
+
 import asyncio
-import signal
+import logging
 import sys
-from aiogram import Bot, Dispatcher
-from bot.config import config, logger
-from bot.handlers import main_router, register_handlers
-from bot.services.scheduler import start_scheduler
-from bot.middleware.rate_limit import RateLimitMiddleware
-from bot.middleware.spam_protection import SpamProtection
-from bot.middleware.performance import PerformanceMiddleware
-from bot.services.monitoring import monitor
-from bot.services.parser import ScheduleParser
-from bot.utils.recovery import create_recovery_manager
-from bot.utils.notifications import AdminNotifier
 import os
+import signal
+from datetime import datetime
+from aiogram import Bot, Dispatcher
+from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.client.default import DefaultBotProperties
+from bot.config import config
+from bot.handlers import register_handlers
+from bot.utils.bot_commands import setup_commands
+from bot.utils.notifications import AdminNotifier
+from bot.database import db as sqlite_db
+from bot.services.scheduler import start_scheduler
+from bot.services.notifications import NotificationManager
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class BotApp:
     def __init__(self):
-        self.bot = Bot(token=config.BOT_TOKEN)
-        self.dp = Dispatcher()
-        self.tasks = []
-        self.is_running = True
-        self.notifier = AdminNotifier(self.bot)
-
+        self.bot = Bot(
+            token=config.BOT_TOKEN, 
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        )
+        self.dp = Dispatcher(storage=MemoryStorage())
+        self.admin_notifier = AdminNotifier(self.bot)
+        self.notification_manager = NotificationManager(self.bot)
+        self.scheduler_task = None
+        self.notification_task = None
+        self.is_stopping = False
+        self.stop_reason = "Штатное завершение работы"
+        
     async def setup(self):
-        """Настройка бота и middleware"""
-        # Подключаем middleware
-        self.dp.message.middleware(RateLimitMiddleware())
-        self.dp.message.middleware(SpamProtection())
-        self.dp.message.middleware(PerformanceMiddleware())
+        """Настройка бота и регистрация обработчиков"""
+        logger.info("Настройка бота")
         
         # Регистрация обработчиков
         register_handlers(self.dp)
         
-        # Уведомляем о запуске
-        await self.notifier.notify_startup()
+        # Настройка команд бота
+        await setup_commands(self.bot)
+        
+        logger.info("Настройка бота завершена")
 
     async def start(self):
-        """Запуск всех сервисов бота"""
+        """Запуск бота"""
+        logger.info("▶️ Начало процесса запуска бота")
+        
+        # Информация о системе
+        import platform
+        system_info = f"ОС: {platform.system()} {platform.version()}"
+        python_info = f"Python: {platform.python_version()}"
+        logger.info(f"📊 Системная информация: {system_info}, {python_info}")
+        
+        # Настройка обработчика сигналов для корректного завершения работы
+        self._setup_signal_handlers()
+        
+        logger.info("⚙️ Настройка обработчиков и команд")
         await self.setup()
         
-        # Создаем и запускаем планировщик в отдельной задаче
-        scheduler_task = asyncio.create_task(start_scheduler(self.bot))
-        self.tasks.extend([
-            asyncio.create_task(self.metrics_collector()),
-            scheduler_task
-        ])
+        # Уведомление администраторов о запуске
+        logger.info("📧 Отправка уведомлений администраторам о запуске")
+        await self.admin_notifier.notify_startup()
         
-        logger.info("Bot services started")
-        self.notifier.log_to_file("Сервисы бота запущены", "INFO")
+        # Запуск планировщика и системы уведомлений
+        logger.info("🔄 Запуск системы уведомлений и планировщика")
+        self.scheduler_task = asyncio.create_task(start_scheduler(self.bot))
+        logger.info("✅ Планировщик обновления расписания запущен успешно")
+        
+        # Запуск поллинга
+        logger.info("🚀 Бот запущен и готов к работе")
+        await self.dp.start_polling(self.bot)
+        
+    def _setup_signal_handlers(self):
+        """Настройка обработчиков сигналов для корректного завершения работы"""
+        try:
+            # Для систем, поддерживающих сигналы (Linux, macOS)
+            if hasattr(signal, 'SIGINT'):
+                asyncio.get_event_loop().add_signal_handler(
+                    signal.SIGINT, 
+                    lambda: asyncio.create_task(self._handle_stop_signal("Получен сигнал прерывания (SIGINT/Ctrl+C)"))
+                )
+            if hasattr(signal, 'SIGTERM'):
+                asyncio.get_event_loop().add_signal_handler(
+                    signal.SIGTERM, 
+                    lambda: asyncio.create_task(self._handle_stop_signal("Получен сигнал завершения (SIGTERM)"))
+                )
+        
+            logger.info("✅ Обработчики сигналов настроены")
+        except (NotImplementedError, RuntimeError) as e:
+            # Для Windows или если нет доступа к добавлению обработчиков сигналов
+            logger.warning(f"⚠️ Не удалось настроить обработчики сигналов: {e}")
+    
+    async def _handle_stop_signal(self, reason: str):
+        """Обработка сигнала остановки"""
+        if not self.is_stopping:
+            self.is_stopping = True
+            self.stop_reason = reason
+            logger.info(f"⚠️ {reason}")
+            
+            # Остановка бота через исключение
+            if self.dp and hasattr(self.dp, "stop_polling"):
+                await self.dp.stop_polling()
+            else:
+                # Если нет метода stop_polling, вызываем остановку напрямую
+                await self.stop()
 
     async def stop(self):
-        """Корректное завершение работы бота"""
-        logger.info("Shutting down bot...")
-        self.is_running = False
+        """Остановка бота"""
+        if self.is_stopping:
+            logger.info(f"⏹️ Остановка бота уже выполняется: {self.stop_reason}")
+            return
+            
+        self.is_stopping = True
+        logger.info(f"⏹️ Начало процесса остановки бота: {self.stop_reason}")
         
-        # Отменяем все фоновые задачи
-        for task in self.tasks:
-            task.cancel()
+        # Уведомление администратора о завершении работы
+        try:
+            logger.info("📧 Отправка уведомлений администраторам о завершении работы")
+            await self.admin_notifier.notify_shutdown(self.stop_reason)
+            logger.info("✅ Уведомления о завершении работы отправлены")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при отправке уведомления о завершении работы: {e}")
+        
+        # Останавливаем планировщик и систему уведомлений
+        if self.scheduler_task:
             try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        
-        # Уведомляем о завершении
-        await self.notifier.send_admin_message("Бот завершает работу", "INFO")
-        
-        # Закрываем сессию бота
-        await self.bot.session.close()
-        logger.info("Bot shutdown complete")
-        self.notifier.log_to_file("Бот остановлен", "INFO")
-
-    async def metrics_collector(self):
-        """Периодический сбор метрик"""
-        while self.is_running:
-            try:
-                await monitor.collect_metrics()
-                await asyncio.sleep(60)
-            except asyncio.CancelledError:
-                break
+                logger.info("🔄 Остановка планировщика и системы уведомлений")
+                self.scheduler_task.cancel()
+                logger.info("✅ Планировщик и система уведомлений успешно остановлены")
             except Exception as e:
-                logger.error(f"Error in metrics collector: {e}")
-                await asyncio.sleep(5)
+                logger.error(f"❌ Ошибка при остановке планировщика: {e}")
+        
+        # Закрытие соединения с базой данных
+        try:
+            logger.info("🔄 Закрытие соединения с базой данных")
+            sqlite_db.close()
+            logger.info("✅ Соединение с базой данных успешно закрыто")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при закрытии соединения с БД: {e}")
+        
+        # Закрытие сессии бота
+        try:
+            logger.info("🔄 Закрытие сессии бота")
+            await self.bot.session.close()
+            logger.info("✅ Сессия бота успешно закрыта")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при закрытии сессии бота: {e}")
+            
+        logger.info(f"👋 Бот успешно остановлен. Причина: {self.stop_reason}")
 
 async def main():
-    """Основная функция запуска бота"""
-    app = BotApp()
-    notifier = app.notifier
+    """Основная функция для запуска бота"""
+    logger.info("🔄 Инициализация бота")
+    bot_app = BotApp()
     
     try:
-        # Создание менеджера восстановления
-        async def restart_bot():
-            logger.info("🔄 Перезапуск бота...")
-            await app.bot.delete_webhook(drop_pending_updates=True)
-            await asyncio.sleep(5)
-            os.execv(sys.executable, ['python'] + sys.argv)
-            
-        recovery_manager = create_recovery_manager(restart_bot, notifier)
-        
-        # Загрузка предыдущего состояния
-        previous_state = await recovery_manager.load_state()
-        if previous_state and not previous_state.get('was_clean_shutdown'):
-            warning_msg = "⚠️ Обнаружено некорректное завершение бота"
-            logger.warning(warning_msg)
-            await notifier.send_admin_message(warning_msg, "WARNING")
-
-        try:
-            # Запуск бота
-            await app.start()
-            await app.dp.start_polling(app.bot)
-        except Exception as e:
-            await recovery_manager.handle_error(e)
-            raise
-
+        logger.info("▶️ Запуск основного процесса бота")
+        await bot_app.start()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("⚠️ Получен сигнал завершения работы (KeyboardInterrupt/SystemExit)")
+        # Задаем причину завершения
+        bot_app.stop_reason = "Получен сигнал завершения от пользователя (Ctrl+C)"
     except Exception as e:
-        error_msg = f"❌ Критическая ошибка: {e}"
-        logger.error(error_msg)
-        await notifier.notify_critical_error(e, "Запуск бота")
-        sys.exit(1)
-
+        logger.error(f"❌ Критическая ошибка: {e}")
+        # Задаем причину завершения
+        bot_app.stop_reason = f"Критическая ошибка: {str(e)}"
+        try:
+            await bot_app.admin_notifier.notify_critical_error(e, "main")
+        except Exception as notif_error:
+            logger.error(f"❌ Не удалось отправить уведомление о критической ошибке: {notif_error}")
     finally:
-        await app.stop()
+        logger.info(f"🔄 Выполнение процедуры остановки бота. Причина: {bot_app.stop_reason}")
+        await bot_app.stop()
+
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("⚠️ Бот остановлен пользователем")
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Бот остановлен пользователем (Ctrl+C)")
     except Exception as e:
-        logger.error(f"❌ Неожиданная ошибка: {e}")
-        sys.exit(1)
+        logger.error(f"Критическая ошибка при запуске бота: {e}")
+        import traceback
+        logger.error(f"Трассировка: {traceback.format_exc()}")
+    finally:
+        # Дополнительная попытка освобождения соединения с БД при аварийном завершении
+        try:
+            sqlite_db.close()
+        except:
+            pass
+        logger.info("Процесс завершен")

@@ -6,9 +6,10 @@ def get_start_keyboard(user_id: int = None) -> ReplyKeyboardMarkup:
     
     kb = [
         [KeyboardButton(text="расписание"), KeyboardButton(text="Сайт колледжа")],
-        [KeyboardButton(text="📊 График учебы")], [KeyboardButton(text="⚙️ Настройки")]
+        [KeyboardButton(text="📊 График учебы")], [KeyboardButton(text="⚙️ Настройки")],
+        [KeyboardButton(text="Скачать приложение")]
     ]
-    if user_id is not None and user_id == config.ADMIN_ID:
+    if user_id is not None and config.is_admin(user_id):
         logger.info(f"Добавление админ-кнопок для пользователя {user_id}")
         kb.append([KeyboardButton(text="Админ-панель")])
         
@@ -27,7 +28,7 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🚫 Баны", callback_data="admin_bans"),
-            InlineKeyboardButton(text=" График учебы", callback_data="admin_study_schedule")
+            InlineKeyboardButton(text="📅 График учебы", callback_data="schedule_photo")
         ],
         [
             InlineKeyboardButton(text="🔄 Обновить расписание", callback_data="admin_update")
@@ -121,7 +122,7 @@ def get_settings_keyboard(user_data: dict) -> InlineKeyboardMarkup:
     kb = []
     
     # Кнопка оповещений
-    notifications_status = "Выкл" if not user_data.get('notifications') else "Вкл"
+    notifications_status = "Выкл" if not user_data.get('notifications_enabled') else "Вкл"
     kb.append([InlineKeyboardButton(
         text=f"🔔 Оповещения: {notifications_status}",
         callback_data="toggle_notifications"

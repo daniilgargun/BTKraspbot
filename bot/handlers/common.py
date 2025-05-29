@@ -6,19 +6,6 @@ from bot.config import logger
 # Создаем роутер для общих команд
 common_router = Router()
 
-@common_router.message(Command("start"))
-async def cmd_start(message: Message):
-    """Обработчик команды /start"""
-    try:
-        await message.answer(
-            "👋 Привет! Я бот БТК для просмотра расписания.\n"
-            "Используйте меню для навигации."
-        )
-        logger.info(f"Пользователь {message.from_user.id} запустил бота")
-    except Exception as e:
-        logger.error(f"Ошибка в обработчике /start: {e}")
-        await message.answer("Произошла ошибка. Пожалуйста, попробуйте позже.")
-
 @common_router.message(Command("help"))
 async def cmd_help(message: Message):
     """Обработчик команды /help"""

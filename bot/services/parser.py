@@ -36,7 +36,7 @@ class ScheduleParser:
         # Добавляем словарь для месяцев
         self.MONTH_MAP = {
             'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4,
-            'май': 5, 'июн': 6, 'июл': 7, 'авг': 8,
+            'май': 5, 'мая': 5, 'июн': 6, 'июл': 7, 'авг': 8,
             'сен': 9, 'окт': 10, 'нояб': 11, 'дек': 12
         }
         
@@ -171,10 +171,23 @@ class ScheduleParser:
             # Сохраняем списки в базу данных
             if len(groups_list) > 0 or len(teachers_list) > 0:
                 try:
-                    await self.db.cache_groups_and_teachers(groups_list, teachers_list)
-                    logger.info(f"Списки сохранены в базу: {len(groups_list)} групп и {len(teachers_list)} преподавателей")
+                    # Сохраняем в SQLite
+                    from bot.database import db as sqlite_db
+                    sqlite_db.save_groups(groups_list)
+                    sqlite_db.save_teachers(teachers_list)
+                    logger.info(f"Списки сохранены в SQLite: {len(groups_list)} групп и {len(teachers_list)} преподавателей")
+                    
+                    # Сохраняем расписание
+                    if schedule_data:
+                        # Сохраняем в SQLite
+                        sqlite_db.save_schedule(schedule_data)
+                        logger.info("Расписание сохранено в SQLite")
+                    else:
+                        logger.error("Расписание пусто!")
+                        return None, [], [], "❌ Не удалось получить расписание"
+                    
                 except Exception as e:
-                    logger.error(f"Ошибка сохранения в базу данных: {e}")
+                    logger.error(f"Ошибка сохранения в базы данных: {e}")
                     return None, [], [], "❌ Ошибка сохранения данных"
             else:
                 logger.error("Списки групп и преподавателей пусты!")
@@ -263,13 +276,24 @@ class ScheduleParser:
             if '-' in date_str:
                 day, month = date_str.split('-')
                 day = day.strip()
-                month = month.strip().lower()[:3]  # Берем только первые 3 буквы месяца
+                month = month.strip().lower()
                 
                 # Проверяем, является ли day числом
                 if not day.isdigit():
                     raise ValueError(f"Некорректный день: {day}")
                 
-                month_num = self.MONTH_MAP.get(month)
+                # Добавляем специальную обработку для "мая"
+                if month == "мая":
+                    month_num = 5
+                else:
+                    # Пробуем сначала полное название месяца
+                    month_num = self.MONTH_MAP.get(month)
+                    
+                    # Затем пробуем первые 3 буквы, если полное название не найдено
+                    if not month_num and len(month) > 3:
+                        month_short = month[:3]
+                        month_num = self.MONTH_MAP.get(month_short)
+                
                 if not month_num:
                     raise ValueError(f"Неизвестный месяц: {month}")
                 
@@ -319,62 +343,43 @@ class ScheduleParser:
     async def get_schedule_for_day(self, day: str, user_data: dict) -> Union[List[Dict], str]:
         """Получение расписания на конкретный день"""
         try:
-            schedule_data = await self.db.get_schedule()
-            if not schedule_data:
-                logger.warning("Расписание не загружено в базу данных")
-                return ("ℹ️ Информация о расписании\n\n"
-                       "В данный момент расписание обновляется на сайте БТК.\n"
-                       "Пожалуйста, повторите запрос через несколько минут.")
-
-            day = day.lower()
-            filtered_schedule = []
-            found_any_schedule = False
+            from bot.database import db as sqlite_db
 
             # Получаем роль и идентификатор пользователя
             role = user_data.get('role')
             if role == 'Студент':
                 target = user_data.get('selected_group')
+                if not target:
+                    return "❌ Не выбрана группа"
+                schedule = sqlite_db.get_schedule_by_group(target)
             else:
                 target = user_data.get('selected_teacher')
+                if not target:
+                    return "❌ Не выбран преподаватель"
+                schedule = sqlite_db.get_schedule_by_teacher(target)
 
-            if not target:
-                return "❌ Не выбрана группа/преподаватель"
+            if not schedule:
+                return ("ℹ️ Информация о расписании\n\n"
+                       "В данный момент расписание обновляется на сайте БТК.\n"
+                       "Пожалуйста, повторите запрос через несколько минут.")
 
             # Получаем номер дня недели
-            target_weekday = self.WEEKDAY_MAP.get(day)
+            target_weekday = self.WEEKDAY_MAP.get(day.lower())
             if target_weekday is None:
                 return f"❌ Некорректный день недели: {day}"
 
-            # Перебираем все даты в расписании
-            for date_str, date_schedule in schedule_data.items():
+            filtered_schedule = []
+            found_any_schedule = False
+
+            # Фильтруем расписание по дню недели
+            for lesson in schedule:
                 try:
-                    # Парсим дату
+                    date_str = lesson['date']
                     parsed_date = self._parse_date(date_str)
-                    if not parsed_date:
-                        continue
-
-                    # Проверяем, соответствует ли день недели запрошенному
-                    if parsed_date.weekday() == target_weekday:
+                    if parsed_date and parsed_date.weekday() == target_weekday:
                         found_any_schedule = True
-                        
-                        # Форматируем дату с днем недели
-                        formatted_date = self._format_date_with_weekday(date_str)
-                        
-                        # Ищем расписание для группы/преподавателя
-                        if role == 'Студент':
-                            if target in date_schedule:
-                                lessons = date_schedule[target]
-                                for lesson in lessons:
-                                    lesson['date'] = formatted_date
-                                filtered_schedule.extend(lessons)
-                        else:
-                            # Для преподавателя ищем во всех группах
-                            for group_schedule in date_schedule.values():
-                                for lesson in group_schedule:
-                                    if lesson.get('teacher') == target:
-                                        lesson['date'] = formatted_date
-                                        filtered_schedule.append(lesson)
-
+                        lesson['date'] = self._format_date_with_weekday(date_str)
+                        filtered_schedule.append(lesson)
                 except Exception as e:
                     logger.error(f"Ошибка при обработке даты {date_str}: {e}")
                     continue
@@ -386,7 +391,7 @@ class ScheduleParser:
                 return f"ℹ️ Расписание на {day}\n\nВ этот день занятий нет."
 
             # Сортируем пары по номеру
-            filtered_schedule.sort(key=lambda x: x['number'])
+            filtered_schedule.sort(key=lambda x: x['lesson_number'])
             return filtered_schedule
 
         except Exception as e:
@@ -396,68 +401,38 @@ class ScheduleParser:
     async def get_full_schedule(self, user_data: dict) -> dict:
         """Получение полного расписания на неделю"""
         try:
-            schedule_data = await self.db.get_schedule()
-            if not schedule_data:
-                return {}
-
-            # Преобразуем даты в нужный формат и сортируем их
-            formatted_schedule = {}
-            dates_with_parsed = []  # Список для сортировки дат
-
-            for date, data in schedule_data.items():
-                try:
-                    parsed_date = self._parse_date(date)
-                    if parsed_date:  # Проверяем, что дата успешно распарсена
-                        formatted_date = self._format_date_with_weekday(date)
-                        dates_with_parsed.append((parsed_date, formatted_date, data))
-                except Exception as e:
-                    logger.error(f"Ошибка форматирования даты {date}: {e}")
-                    continue
-
-            # Сортируем даты по возрастанию
-            dates_with_parsed.sort(key=lambda x: x[0])
-            
-            # Создаем отсортированный словарь
-            for _, formatted_date, data in dates_with_parsed:
-                formatted_schedule[formatted_date] = data
+            from bot.database import db as sqlite_db
 
             # Для преподавателя
             if user_data.get('role') == 'Преподаватель':
                 teacher = user_data.get('selected_teacher')
                 if not teacher:
                     return {}
-
-                filtered_schedule = {}
-                for date, groups in formatted_schedule.items():
-                    filtered_schedule[date] = []
-                    for group_name, group_schedule in groups.items():
-                        for lesson in group_schedule:
-                            if lesson.get('teacher') == teacher:
-                                # Копируем урок и добавляем информацию о группе
-                                lesson_with_group = lesson.copy()
-                                lesson_with_group['group'] = group_name
-                                filtered_schedule[date].append(lesson_with_group)
-                    
-                    # Если на этот день нет пар, удаляем дату
-                    if not filtered_schedule[date]:
-                        del filtered_schedule[date]
-                
-                return filtered_schedule
-
+                schedule = sqlite_db.get_schedule_by_teacher(teacher)
             # Для студента
             else:
                 group = user_data.get('selected_group')
                 if not group:
                     return {}
+                schedule = sqlite_db.get_schedule_by_group(group)
 
-                filtered_schedule = {}
-                for date, groups in formatted_schedule.items():
-                    if group in groups:
-                        # Сортируем пары по номеру
-                        lessons = sorted(groups[group], key=lambda x: x['number'])
-                        filtered_schedule[date] = lessons
-                
-                return filtered_schedule
+            if not schedule:
+                return {}
+
+            # Группируем расписание по датам
+            formatted_schedule = {}
+            for lesson in schedule:
+                date = lesson['date']
+                formatted_date = self._format_date_with_weekday(date)
+                if formatted_date not in formatted_schedule:
+                    formatted_schedule[formatted_date] = []
+                formatted_schedule[formatted_date].append(lesson)
+
+            # Сортируем пары по номеру для каждой даты
+            for date in formatted_schedule:
+                formatted_schedule[date].sort(key=lambda x: x['lesson_number'])
+
+            return formatted_schedule
 
         except Exception as e:
             logger.error(f"Ошибка при получении полного расписания: {e}")
@@ -473,7 +448,7 @@ class ScheduleParser:
 
 async def main():
     parser = ScheduleParser()
-    schedule, groups, error = await parser.parse_schedule()
+    schedule, groups, teachers, error = await parser.parse_schedule()
     if error:
         logger.error(error)
     else:

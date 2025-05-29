@@ -3,6 +3,7 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from cachetools import TTLCache
 from datetime import datetime, timedelta
 from bot.config import logger, config
+from bot.database.db_adapter import db_adapter as db
 import logging
 
 class SpamProtection(BaseMiddleware):
@@ -10,44 +11,62 @@ class SpamProtection(BaseMiddleware):
         self.cache = TTLCache(maxsize=10000, ttl=60.0)
         self.message_limit = 20
         self.warning_count = 5
-        # Словарь для хранения информации о банах: {user_id: (timestamp_end, reason)}
+        # Для оперативного доступа храним информацию о банах в памяти
+        # Но основное хранение в базе данных
         self.banned_users = {}
         # Сообщения в обработке для связи с админом
         self.admin_messages = set()
         
-    def ban_user(self, user_id: int, duration_minutes: int = 30, reason: str = "спам"):
+    async def ban_user(self, user_id: int, duration_minutes: int = 30, reason: str = "спам"):
         """Временный бан пользователя"""
         ban_end = datetime.now() + timedelta(minutes=duration_minutes)
         self.banned_users[user_id] = (ban_end, reason)
         logger.warning(f"User {user_id} banned for {duration_minutes} minutes. Reason: {reason}")
 
-    def unban_user(self, user_id: int) -> bool:
+        # Сохраняем информацию о бане в базе данных
+        await db.ban_user(user_id, reason)
+
+    async def unban_user(self, user_id: int) -> bool:
         """Разбан пользователя"""
         if user_id in self.banned_users:
             del self.banned_users[user_id]
             logger.info(f"User {user_id} has been unbanned")
+            
+            # Разбаниваем пользователя в базе данных
+            await db.unban_user(user_id)
             return True
         return False
 
-    def is_banned(self, user_id: int) -> tuple[bool, str, datetime]:
+    async def is_banned(self, user_id: int) -> tuple[bool, str, datetime]:
         """Проверка бана с возвратом статуса, причины и времени окончания"""
+        # Сначала проверяем в кэше
         if user_id in self.banned_users:
             ban_end, reason = self.banned_users[user_id]
             if datetime.now() >= ban_end:
-                self.unban_user(user_id)
+                await self.unban_user(user_id)
                 return False, "", None
             return True, reason, ban_end
+            
+        # Если не нашли в кэше, проверяем в базе данных
+        is_banned, reason = await db.is_user_banned(user_id)
+        if is_banned:
+            # Если пользователь забанен в базе, но не в кэше,
+            # добавляем его в кэш с временем окончания через 30 минут
+            ban_end = datetime.now() + timedelta(minutes=30)
+            self.banned_users[user_id] = (ban_end, reason)
+            return True, reason, ban_end
+            
         return False, "", None
 
     async def __call__(self, handler, event: Message, data):
         user_id = event.from_user.id
         
         # Пропускаем админов
-        if user_id == config.ADMIN_ID:
+        if config.is_admin(user_id):
             return await handler(event, data)
 
         # Проверяем бан
-        is_banned, reason, ban_end = self.is_banned(user_id)
+        is_banned, reason, ban_end = await self.is_banned(user_id)
         if is_banned:
             time_left = ban_end - datetime.now()
             minutes_left = int(time_left.total_seconds() / 60)
@@ -110,7 +129,7 @@ class SpamProtection(BaseMiddleware):
             user_data["warnings"] += 1
             if user_data["warnings"] >= self.warning_count:
                 # Временный бан на 30 минут
-                self.ban_user(user_id, duration_minutes=30)
+                await self.ban_user(user_id, duration_minutes=30)
                 await event.answer(
                     "🚫 Вы заблокированы на 30 минут за спам\n"
                     "Для связи с администратором используйте команду /admin <ваше сообщение>"

@@ -340,12 +340,11 @@ class ScheduleParser:
             logger.error(f"Ошибка форматирования даты {date_str}: {e}")
             return date_str
 
-    async def get_schedule_for_day(self, day: str, user_data: dict) -> Union[List[Dict], str]:
+    async def get_schedule_for_day(self, day: str, user_data: dict) -> Union[Dict[str, List[Dict]], str]:
         """Получение расписания на конкретный день"""
         try:
             from bot.database import db as sqlite_db
 
-            # Получаем роль и идентификатор пользователя
             role = user_data.get('role')
             if role == 'Студент':
                 target = user_data.get('selected_group')
@@ -363,36 +362,35 @@ class ScheduleParser:
                        "В данный момент расписание обновляется на сайте БТК.\n"
                        "Пожалуйста, повторите запрос через несколько минут.")
 
-            # Получаем номер дня недели
-            target_weekday = self.WEEKDAY_MAP.get(day.lower())
-            if target_weekday is None:
+            target_weekday_num = self.WEEKDAY_MAP.get(day.lower())
+            if target_weekday_num is None:
                 return f"❌ Некорректный день недели: {day}"
 
-            filtered_schedule = []
-            found_any_schedule = False
-
-            # Фильтруем расписание по дню недели
+            grouped_schedule: Dict[str, List[Dict]] = {}
+            
+            # Фильтруем расписание по дню недели и группируем по датам
             for lesson in schedule:
                 try:
                     date_str = lesson['date']
                     parsed_date = self._parse_date(date_str)
-                    if parsed_date and parsed_date.weekday() == target_weekday:
-                        found_any_schedule = True
-                        lesson['date'] = self._format_date_with_weekday(date_str)
-                        filtered_schedule.append(lesson)
+                    
+                    if parsed_date and parsed_date.weekday() == target_weekday_num:
+                        formatted_date_with_weekday = self._format_date_with_weekday(date_str)
+                        if formatted_date_with_weekday not in grouped_schedule:
+                            grouped_schedule[formatted_date_with_weekday] = []
+                        grouped_schedule[formatted_date_with_weekday].append(lesson)
                 except Exception as e:
                     logger.error(f"Ошибка при обработке даты {date_str}: {e}")
                     continue
 
-            if not found_any_schedule:
-                return f"ℹ️ Расписание на {day}\n\nРасписание на этот день не загружено на сайте БТК."
+            if not grouped_schedule:
+                return f"ℹ️ Расписание на {day}\n\nРасписание на этот день не загружено на сайте БТК или занятий нет."
 
-            if not filtered_schedule:
-                return f"ℹ️ Расписание на {day}\n\nВ этот день занятий нет."
-
-            # Сортируем пары по номеру
-            filtered_schedule.sort(key=lambda x: x['lesson_number'])
-            return filtered_schedule
+            # Сортируем пары по номеру для каждой даты
+            for date_key in grouped_schedule:
+                grouped_schedule[date_key].sort(key=lambda x: x['lesson_number'])
+            
+            return grouped_schedule
 
         except Exception as e:
             logger.error(f"Ошибка при получении расписания на день: {e}")

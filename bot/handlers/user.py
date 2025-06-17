@@ -540,34 +540,40 @@ async def process_day_selection(message: Message, state: FSMContext):
     elif message.text in ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"]:
         # Определяем тип дня для статистики выживаемости
         day_type = "weekend" if message.text == "Суббота" else "lecture"
-        
+
         schedule_data = await parser.get_schedule_for_day(message.text.lower(), user_data)
-        if isinstance(schedule_data, list):
-            response = ScheduleFormatter.format_schedule(schedule_data, message.text, user_data)
-            
-            # Добавляем первоапрельскую статистику выживаемости, если сегодня 1 апреля
-            if is_april_fools_day():
-                response += get_survival_stats(day_type)
-                # Добавляем кнопку "Просить пощады"
-                await message.answer(response, reply_markup=get_mercy_button())
+        
+        # Теперь schedule_data может быть словарем или строкой (сообщением об ошибке)
+        if isinstance(schedule_data, dict):
+            # Если расписание найдено и это словарь, форматируем его
+            if schedule_data:
+                response = ScheduleFormatter.format_schedule(schedule_data, message.text, user_data)
+                
+                # Добавляем первоапрельскую статистику выживаемости, если сегодня 1 апреля
+                if is_april_fools_day():
+                    response += get_survival_stats(day_type)
+                    # Добавляем кнопку "Просить пощады"
+                    await message.answer(response, reply_markup=get_mercy_button())
+                else:
+                    await message.answer(response)
             else:
-                await message.answer(response)
+                # Если словарь пустой, значит занятий нет
+                resp_text = (
+                    f"ℹ️ Расписание на {message.text.lower()}\n\n"
+                    "В ближайшие дни занятий нет."
+                )
+                if is_april_fools_day():
+                    resp_text += get_survival_stats("weekend")
+                    await message.answer(resp_text, reply_markup=get_mercy_button())
+                else:
+                    await message.answer(resp_text)
+
         elif isinstance(schedule_data, str):
             # Если вернулось сообщение об ошибке
             await message.answer(schedule_data)
         else:
-            resp_text = (
-                f"ℹ️ Расписание на {message.text.lower()}\n\n"
-                "В ближайшие дни занятий нет."
-            )
-            
-            # Добавляем первоапрельскую статистику, если сегодня 1 апреля
-            if is_april_fools_day():
-                resp_text += get_survival_stats("weekend")
-                # Добавляем кнопку "Просить пощады"
-                await message.answer(resp_text, reply_markup=get_mercy_button())
-            else:
-                await message.answer(resp_text)
+            # На случай, если что-то пошло не так и вернулся неожиданный тип
+            await message.answer("❌ Произошла неизвестная ошибка при получении расписания.")
     else:
         await message.answer("❌ Пожалуйста, выберите корректный день недели из меню")
         return
